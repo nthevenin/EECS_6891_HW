@@ -1,3 +1,4 @@
+```c
 #include <bpf/libbpf.h>
 #include <bpf/bpf.h>
 #include <stdio.h>
@@ -14,7 +15,7 @@
 	(void) (&_min1 == &_min2);		\
 	_min1 < _min2 ? _min1 : _min2; })
 
-
+// Function to print a histogram bar with stars
 static void out_stars(unsigned int val, unsigned int val_max, int width) {
 	int num_stars, num_spaces, i;
 	bool plus;
@@ -31,6 +32,7 @@ static void out_stars(unsigned int val, unsigned int val_max, int width) {
 		printf("+");
 }
 
+// Function to print the histogram of IO latencies
 void print_hist(unsigned int *vals, int vals_size, const char *val_type) {
 	int stars_max = 40, idx_max = -1;
 	unsigned int val, val_max = 0;
@@ -70,14 +72,13 @@ void print_hist(unsigned int *vals, int vals_size, const char *val_type) {
 }
 
 int main(int argc, char **argv) {
-
     struct bpf_object *obj;
     struct bpf_program *prog;
-    struct bpf_link *ltinks[3];
+    struct bpf_link *links[3];
     int prog_fd;
     int interval;
 
-    //Inputs
+    // Check for correct number of arguments
     if (argc != 2) {
         fprintf(stderr, "Usage: %s <interval>\n", argv[0]);
         return 1;
@@ -85,7 +86,7 @@ int main(int argc, char **argv) {
 
     interval = atoi(argv[1]);
 
-    // Load and verify BPF application
+    // Load BPF object file
     fprintf(stderr, "Loading BPF code in memory\n");
     obj = bpf_object__open_file("iolatency.bpf.o", NULL);
     if (libbpf_get_error(obj)) {
@@ -93,77 +94,82 @@ int main(int argc, char **argv) {
         return 1;
     }
 
-    // Load BPF program
+    // Load and verify BPF program
     fprintf(stderr, "Loading and verifying the code in the kernel\n");
     if (bpf_object__load(obj)) {
         fprintf(stderr, "ERROR: loading BPF object file failed\n");
+        bpf_object__close(obj);
         return 1;
     }
 
-    // Load histogram maps in BPF
+    // Find and load histogram map
     struct bpf_map *histmap;
     histmap = bpf_object__find_map_by_name(obj, "hist");
     if (libbpf_get_error(histmap)) {
         fprintf(stderr, "ERROR: loading BPF map failed\n");
+        bpf_object__close(obj);
         return 1;
     }
 
     int map_fd = bpf_map__fd(histmap);
     
+    // Initialize histogram map
     struct hist hist0 = {0};
     __u32 key = 0;
     if (bpf_map_update_elem(map_fd, &key, &hist0, BPF_ANY) < 0) {
         perror("bpf_map_update_elem");
+        bpf_object__close(obj);
         return 1;
     }
 
-    // Attach BPF program
-    char *prog_names[] = {"block_rq_insert", "block_rq_issue", "block_rq_complete",};
-
-    struct bpf_link *links[ARRAY_SIZE(prog_names)];
-
+    // Attach BPF programs to tracepoints
+    char *prog_names[] = {"block_rq_insert", "block_rq_issue", "block_rq_complete"};
     for (int i = 0; i < ARRAY_SIZE(prog_names); i++) {
         prog = bpf_object__find_program_by_name(obj, prog_names[i]);
         if (libbpf_get_error(prog)) {
-            fprintf(stderr, "ERROR: finding BPF program failed\n");
+            fprintf(stderr, "ERROR: finding BPF program '%s' failed\n", prog_names[i]);
+            bpf_object__close(obj);
             return 1;
         }
         prog_fd = bpf_program__fd(prog);
         if (prog_fd < 0) {
             fprintf(stderr, "ERROR: getting BPF program FD failed\n");
+            bpf_object__close(obj);
             return 1;
         }
 
         links[i] = bpf_program__attach(prog);
         if (libbpf_get_error(links[i])) {
-            fprintf(stderr, "ERROR: Attaching BPF program failed\n");
+            fprintf(stderr, "ERROR: Attaching BPF program '%s' failed\n", prog_names[i]);
+            bpf_object__close(obj);
             return 1;
         }
     }
-    printf("Tracepoint attached with neeeded maps. Printing histogram..");
+    printf("Tracepoint attached with needed maps. Printing histogram..\n");
 
+    // Main loop to periodically read and print the histogram
     while (1) {
         sleep(interval);
 
-        // Get histogram
+        // Retrieve histogram data from the BPF map
         struct hist hist;
         if (bpf_map_lookup_elem(map_fd, &key, &hist) < 0) {
             perror("bpf_map_lookup_elem");
             break;
         }
 
-        // Reset
+        // Reset the histogram map for the next interval
         if (bpf_map_update_elem(map_fd, &key, &hist0, BPF_ANY) < 0) {
             perror("bpf_map_update_elem");
             break;
         }
 
-        // Print out histogram
-        print_hist(hist.slots, SLOTS, " usecs");
+        // Print the histogram
+        print_hist(hist.slots, SLOTS, "usecs");
         printf("\n");
     }
 
-    // Cleanup
+    // Cleanup resources
     for (int i = 0; i < ARRAY_SIZE(links); i++) {
         bpf_link__destroy(links[i]);
     }
@@ -171,4 +177,4 @@ int main(int argc, char **argv) {
 
     return 0;
 }
-
+```
